@@ -1,0 +1,10 @@
+{
+  "files.associations": {
+    "btstack.h": "c",
+    "mpu6050.h": "c",
+    "btstack_event.h": "c",
+    "bluetooth_gatt.h": "c",
+    "btstack_config.h": "c"
+  },
+  "C_Cpp.default.compilerPath": "/usr/bin/arm-none-eabi-gcc"
+}
