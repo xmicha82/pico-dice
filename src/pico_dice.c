@@ -1,3 +1,8 @@
+/**
+ * Author:    Martin Michalik (xmicha82)
+ * Created:   5.2024
+ **/
+
 #include "stdio.h"
 #include "btstack.h"
 #include "btstack_event.h"
@@ -8,54 +13,29 @@
 #include <math.h>
 
 #include "pico_dice.h"
+#include "dice_types.h"
 
+
+// part of outline for BTstack enabled app
 #define APP_AD_FLAGS 0x06
-#define HEARTBEAT_PERIOD_MS 500
-
-typedef mpu6050_vectorf_t vectorf_t;
-
-enum Dice {
-    D4,
-    D6,
-    D8,
-    D10,
-    D12,
-    D20,
-    D100
-};
-
-// typedef struct DiceStruct {
-//     vectorf_t* sides;
-//     enum Dice mode;
-//     int sides_count;
-// } DiceStruct;
-
-int dice = 0;
-
-vectorf_t d6[] = {
-    { 1.0,  0.0,  0.0},
-    { 0.0, -0.7, -0.7},
-    { 0.0,  0.7, -0.7},
-    { 0.0, -0.7,  0.7},
-    { 0.0,  0.7,  0.7},
-    {-1.0,  0.0,  0.0},
-};
-
-// vectorf_t d8[] = {
-//     {},
-//     {},
-//     {},
-//     {},
-//     {},
-//     {},
-//     {},
-//     {},
-// };
 
 static btstack_packet_callback_registration_t hci_event_callback_registration;
 static hci_con_handle_t con_handle;
 static int accel_notification_enabled;
 static btstack_timer_source_t heartbeat;
+
+const uint8_t adv_data[] = {
+  // Flags general discoverable
+    0x02, BLUETOOTH_DATA_TYPE_FLAGS, APP_AD_FLAGS,
+    // Name
+    0x0a, BLUETOOTH_DATA_TYPE_COMPLETE_LOCAL_NAME, 'P', 'i', 'c', 'o', ' ', 'D', 'i', 'c', 'e',
+    0x03,
+    BLUETOOTH_DATA_TYPE_INCOMPLETE_LIST_OF_16_BIT_SERVICE_CLASS_UUIDS, 0x10, 0xff
+};
+
+const uint8_t adv_data_len = sizeof(adv_data);
+
+// end outline
 
 mpu6050_t mpu6050;
 mpu6050_activity_t* activities;
@@ -72,31 +52,22 @@ static char result_string[10];
 static int result_string_len;
 
 uint8_t dice_roll = 0;
-
-const uint8_t adv_data[] = {
-  // Flags general discoverable
-    0x02, BLUETOOTH_DATA_TYPE_FLAGS, APP_AD_FLAGS,
-    // Name
-    0x0a, BLUETOOTH_DATA_TYPE_COMPLETE_LOCAL_NAME, 'P', 'i', 'c', 'o', ' ', 'D', 'i', 'c', 'e',
-    0x03,
-    BLUETOOTH_DATA_TYPE_INCOMPLETE_LIST_OF_16_BIT_SERVICE_CLASS_UUIDS, 0x10, 0xff
+DiceStruct current_dice = {
+    D6,
+    d6_sides,
+    6
 };
-
-const uint8_t adv_data_len = sizeof(adv_data);
 
 float dot_product(vectorf_t v1, vectorf_t v2) {
   return v1.x * v2.x + v1.y * v2.y + v1.z * v2.z;
 }
 
-float vec_len(vectorf_t v) {
-  return sqrtf(powf(v.x, 2) + powf(v.y, 2) + powf(v.z, 2));
-}
-
 int8_t max_correlation_index(vectorf_t input) {
   int8_t max_index = -1;
   float max_correlation = 0;
-  for(int i = 0; i < 6; i++) {
-    float correlation = dot_product(d6[i], input);
+  for(int i = 0; i < current_dice.size; i++) {
+    float correlation = dot_product(current_dice.sides[i], input);
+    printf("[%d/%d]: %f", i, current_dice.size, correlation);
     if(correlation > max_correlation) {
       max_correlation = correlation;
       max_index = i;
@@ -118,17 +89,11 @@ int is_between(float f, float lower, float higher) {
 }
 
 void get_sensor_data() {
-    // Fetch all data from the sensor | I2C is only used here
     mpu6050_event(&mpu6050);
 
-    // Pointers to float vectors with all the results
     accel = mpu6050_get_accelerometer(&mpu6050);
 
-    // Activity struct holding all interrupt flags
-    activities = mpu6050_read_activities(&mpu6050);
-
-    // Print all the measurements
-    printf("%02.1f,%02.1f,%02.1f", accel->x, accel->y, accel->z);
+    printf("%02.1f,%02.1f,%02.1f\n", accel->x, accel->y, accel->z);
 }
 
 void prepare_result() {
@@ -154,6 +119,9 @@ int dice_inactive(){
         return false;
     }
 }
+
+// function signatures part of BTstack example outline
+
 
 static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t* packet, uint16_t size) {
     UNUSED(size);
@@ -208,8 +176,20 @@ int att_write_callback(hci_con_handle_t connection_handle, uint16_t att_handle, 
             return 0;
             break;
         case ATT_CHARACTERISTIC_5AFC00F8_D780_44D7_9BBD_D025941A2B23_01_VALUE_HANDLE:
-            dice = little_endian_read_16(buffer, 0);
-            printf("Writing: %d\n", dice);
+            int dice = little_endian_read_16(buffer, 0);
+
+            switch (dice)
+            {
+            case D6:
+                current_dice = d6;
+                break;
+            case D8:
+                current_dice = d8;
+                break;
+            default:
+                current_dice = d6;
+                break;
+            }
             return 0;
             break;
         default:
@@ -217,26 +197,31 @@ int att_write_callback(hci_con_handle_t connection_handle, uint16_t att_handle, 
     }
 }
 
+// end outline code
+
+
 int main() {
     gpio_set_function(16, GPIO_FUNC_UART); //TX
     gpio_set_function(17, GPIO_FUNC_UART); //RX
     stdio_init_all();
 
-    // Setup I2C properly
+    // nastavenie I2C
     gpio_init(PICO_DEFAULT_I2C_SDA_PIN);
     gpio_init(PICO_DEFAULT_I2C_SCL_PIN);
     gpio_set_function(PICO_DEFAULT_I2C_SDA_PIN, GPIO_FUNC_I2C);
     gpio_set_function(PICO_DEFAULT_I2C_SCL_PIN, GPIO_FUNC_I2C);
-    // Don't forget the pull ups! | Or use external ones
+
+    // Pullup rezistory pre I2C
     gpio_pull_up(PICO_DEFAULT_I2C_SDA_PIN);
     gpio_pull_up(PICO_DEFAULT_I2C_SCL_PIN);
 
     sleep_ms(500);
-    // Pass in the I2C driver (Important for dual-core operations). The second parameter is the address,
-    // which can change if you connect pin A0 to GND or to VCC.
+
     mpu6050 = mpu6050_init(i2c0, MPU6050_ADDRESS_A0_GND);
 
     // Check if the MPU6050 can initialize
+    // code taken from
+    // https://github.com/HumansAreWeak/rpi-pico-mpu6050/blob/master/example/mpu6050_accelerometer_and_gyro_read.c
     if (mpu6050_begin(&mpu6050))
     {
         // Set scale of gyroscope
@@ -278,6 +263,9 @@ int main() {
         }
     }
 
+    // end taken code
+
+    // code part of BTstack outlne
     hci_event_callback_registration.callback = &packet_handler;
     hci_add_event_handler(&hci_event_callback_registration);
 
@@ -289,6 +277,8 @@ int main() {
     att_server_register_packet_handler(packet_handler);
 
     hci_power_control(HCI_POWER_ON);
+
+    //end outline code
 
     while (1)
     {
